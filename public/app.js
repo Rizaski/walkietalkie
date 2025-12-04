@@ -23,6 +23,9 @@ class WalkieTalkieApp {
         this.latency = null;
         this.databaseListeners = [];
         this.processedAudioChunks = new Set();
+        this.recordingMimeType = null;
+        this.isPTTButtonPressed = false; // Track if button is physically pressed
+        this.recorderStateCheckInterval = null; // Interval to monitor recorder state
 
         this.init();
     }
@@ -69,18 +72,34 @@ class WalkieTalkieApp {
         // PTT Button
         const pttBtn = document.getElementById('ptt-btn');
         if (pttBtn) {
-            pttBtn.addEventListener('mousedown', () => this.startPTT());
-            pttBtn.addEventListener('mouseup', () => this.stopPTT());
+            pttBtn.addEventListener('mousedown', () => {
+                this.isPTTButtonPressed = true;
+                this.startPTT();
+            });
+            pttBtn.addEventListener('mouseup', () => {
+                this.isPTTButtonPressed = false;
+                this.stopPTT();
+            });
             pttBtn.addEventListener('mouseleave', () => {
-                if (this.isSpeaking) this.stopPTT();
+                if (this.isPTTButtonPressed) {
+                    this.isPTTButtonPressed = false;
+                    this.stopPTT();
+                }
             });
             // Touch events
             pttBtn.addEventListener('touchstart', (e) => {
                 e.preventDefault();
+                this.isPTTButtonPressed = true;
                 this.startPTT();
             });
             pttBtn.addEventListener('touchend', (e) => {
                 e.preventDefault();
+                this.isPTTButtonPressed = false;
+                this.stopPTT();
+            });
+            pttBtn.addEventListener('touchcancel', (e) => {
+                e.preventDefault();
+                this.isPTTButtonPressed = false;
                 this.stopPTT();
             });
         }
@@ -90,6 +109,7 @@ class WalkieTalkieApp {
             if (e.code === 'Space' && !this.spacePressed && this.isJoined) {
                 e.preventDefault();
                 this.spacePressed = true;
+                this.isPTTButtonPressed = true;
                 this.startPTT();
             }
         });
@@ -98,6 +118,7 @@ class WalkieTalkieApp {
             if (e.code === 'Space') {
                 e.preventDefault();
                 this.spacePressed = false;
+                this.isPTTButtonPressed = false;
                 if (this.isSpeaking) this.stopPTT();
             }
         });
@@ -480,6 +501,7 @@ class WalkieTalkieApp {
             }
 
             // Stop any ongoing recording
+            this.isPTTButtonPressed = false;
             if (this.isSpeaking) {
                 this.stopPTT();
             }
@@ -529,11 +551,26 @@ class WalkieTalkieApp {
     }
 
     async startPTT() {
-        if (!this.isJoined || this.isSpeaking) return;
+        if (!this.isJoined) return;
+
+        // If already speaking and recorder is active, don't restart
+        if (this.isSpeaking && this.recorder && this.recorder.state === 'recording') {
+            return;
+        }
 
         try {
             if (!this.mediaStream) {
                 await this.ensureMicrophone();
+            }
+
+            // Ensure mediaStream is still active
+            if (this.mediaStream) {
+                const audioTracks = this.mediaStream.getAudioTracks();
+                if (audioTracks.length === 0 || audioTracks[0].readyState === 'ended') {
+                    console.warn('MediaStream track ended, reacquiring...');
+                    this.mediaStream = null;
+                    await this.ensureMicrophone();
+                }
             }
 
             // Check for supported MIME types
@@ -568,7 +605,20 @@ class WalkieTalkieApp {
             // Add error handler
             this.recorder.onerror = (event) => {
                 console.error('MediaRecorder error:', event.error);
-                this.showToast('Recording error: ' + event.error.message, 'error');
+                // Don't show toast for every error to avoid spam
+                // If button is still pressed, try to restart
+                if (this.isPTTButtonPressed && this.isJoined) {
+                    console.warn('Recorder error while button pressed, attempting restart...');
+                    setTimeout(() => {
+                        if (this.isPTTButtonPressed && this.isJoined) {
+                            this.recorder = null;
+                            this.isSpeaking = false;
+                            this.startPTT();
+                        }
+                    }, 200);
+                } else {
+                    this.showToast('Recording error: ' + event.error.message, 'error');
+                }
             };
 
             this.recorder.ondataavailable = async (e) => {
@@ -651,14 +701,33 @@ class WalkieTalkieApp {
             };
 
             this.recorder.onstop = async () => {
-                this.isSpeaking = false;
-                this.updateSpeakingIndicator(false);
+                // Only stop if button is not pressed (intentional stop)
+                // If button is still pressed, restart recording
+                if (!this.isPTTButtonPressed) {
+                    this.isSpeaking = false;
+                    this.updateSpeakingIndicator(false);
 
-                // Update speaking state in database
-                if (this.channelRef) {
-                    await this.channelRef.child('users').child(this.userId).update({
-                        isSpeaking: false
-                    });
+                    // Update speaking state in database
+                    if (this.channelRef) {
+                        await this.channelRef.child('users').child(this.userId).update({
+                            isSpeaking: false
+                        });
+                    }
+
+                    // Clear state monitoring
+                    if (this.recorderStateCheckInterval) {
+                        clearInterval(this.recorderStateCheckInterval);
+                        this.recorderStateCheckInterval = null;
+                    }
+                } else {
+                    // Button still pressed but recorder stopped - restart it
+                    console.warn('Recorder stopped unexpectedly while button pressed, restarting...');
+                    // Small delay to ensure cleanup
+                    setTimeout(() => {
+                        if (this.isPTTButtonPressed && this.isJoined) {
+                            this.startPTT();
+                        }
+                    }, 50);
                 }
             };
 
@@ -673,6 +742,9 @@ class WalkieTalkieApp {
                 pttBtn.classList.add('pressed');
             }
 
+            // Monitor recorder state to catch unexpected stops
+            this.startRecorderStateMonitoring();
+
         } catch (error) {
             console.error('PTT start error:', error);
             this.showToast('Failed to start recording', 'error');
@@ -680,6 +752,12 @@ class WalkieTalkieApp {
     }
 
     stopPTT() {
+        // Clear state monitoring
+        if (this.recorderStateCheckInterval) {
+            clearInterval(this.recorderStateCheckInterval);
+            this.recorderStateCheckInterval = null;
+        }
+
         if (this.recorder && this.recorder.state !== 'inactive') {
             this.recorder.stop();
             this.recorder = null;
@@ -690,6 +768,57 @@ class WalkieTalkieApp {
         if (pttBtn) {
             pttBtn.classList.remove('pressed');
         }
+    }
+
+    startRecorderStateMonitoring() {
+        // Clear any existing interval
+        if (this.recorderStateCheckInterval) {
+            clearInterval(this.recorderStateCheckInterval);
+        }
+
+        // Monitor recorder state every 500ms
+        this.recorderStateCheckInterval = setInterval(() => {
+            if (!this.recorder) {
+                // Recorder was cleared, stop monitoring
+                clearInterval(this.recorderStateCheckInterval);
+                this.recorderStateCheckInterval = null;
+                return;
+            }
+
+            // Check if button is still pressed but recorder stopped unexpectedly
+            if (this.isPTTButtonPressed && this.isJoined &&
+                this.recorder.state === 'inactive' && this.isSpeaking) {
+                console.warn('Recorder stopped unexpectedly, restarting...');
+                // Restart recording
+                const oldRecorder = this.recorder;
+                this.recorder = null;
+                this.isSpeaking = false;
+
+                // Restart after a brief delay
+                setTimeout(() => {
+                    if (this.isPTTButtonPressed && this.isJoined) {
+                        this.startPTT();
+                    }
+                }, 100);
+            }
+
+            // Also check if mediaStream is still active
+            if (this.mediaStream) {
+                const audioTracks = this.mediaStream.getAudioTracks();
+                if (audioTracks.length === 0 || audioTracks[0].readyState === 'ended') {
+                    console.warn('MediaStream track ended, reacquiring microphone...');
+                    // Reacquire microphone
+                    this.mediaStream = null;
+                    if (this.isPTTButtonPressed && this.isJoined) {
+                        setTimeout(() => {
+                            if (this.isPTTButtonPressed && this.isJoined) {
+                                this.startPTT();
+                            }
+                        }, 100);
+                    }
+                }
+            }
+        }, 500);
     }
 
     async handleAudioChunk(audioData) {
