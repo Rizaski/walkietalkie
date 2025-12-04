@@ -126,17 +126,23 @@
                 </button>
             </header>
             <main class="page-content">
+                <div class="create-channel-section">
+                    <div class="create-channel-input-group">
+                        <input type="text" id="new-channel-input" placeholder="Enter channel name..." maxlength="30">
+                        <button id="create-channel-btn-inline" class="btn btn-primary">
+                            <svg class="icon">
+                                <use href="#icon-channel"></use>
+                            </svg>
+                            <span>Create</span>
+                        </button>
+                    </div>
+                </div>
                 <div class="search-bar">
                     <input type="text" id="channel-search" placeholder="Search channels...">
                 </div>
                 <div id="channels-list" class="channels-list">
                     <!-- Channels will be populated here -->
                 </div>
-                <button id="create-channel-btn" class="fab" aria-label="Create Channel">
-                    <svg class="icon">
-                        <use href="#icon-channel"></use>
-                    </svg>
-                </button>
             </main>
             <nav class="bottom-nav">
                 <button class="nav-item active">

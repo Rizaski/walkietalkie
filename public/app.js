@@ -47,8 +47,21 @@ class WalkieTalkieApp {
         document.getElementById('channel-menu-btn').addEventListener('click', () => this.navigate('settings-page'));
         document.getElementById('nav-users').addEventListener('click', () => this.showToast('Users feature coming soon', 'info'));
 
-        // Channel creation
-        document.getElementById('create-channel-btn').addEventListener('click', () => this.showCreateChannelDialog());
+        // Channel creation - inline input
+        const createChannelBtnInline = document.getElementById('create-channel-btn-inline');
+        if (createChannelBtnInline) {
+            createChannelBtnInline.addEventListener('click', () => this.createChannelFromInput());
+        }
+
+        // Enter key on channel input
+        const newChannelInput = document.getElementById('new-channel-input');
+        if (newChannelInput) {
+            newChannelInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    this.createChannelFromInput();
+                }
+            });
+        }
 
         // Channel search
         document.getElementById('channel-search').addEventListener('input', (e) => this.filterChannels(e.target.value));
@@ -1142,6 +1155,7 @@ class WalkieTalkieApp {
             info.className = 'channel-info';
             const name = document.createElement('h3');
             name.textContent = channel.name;
+            name.title = channel.name; // Tooltip for full name
             const desc = document.createElement('p');
             desc.textContent = `${channel.userCount || 0} users online`;
             info.appendChild(name);
@@ -1171,16 +1185,57 @@ class WalkieTalkieApp {
         });
     }
 
+    async createChannelFromInput() {
+        const input = document.getElementById('new-channel-input');
+        if (!input) return;
+
+        const channelName = input.value.trim();
+        if (!channelName) {
+            this.showToast('Please enter a channel name', 'error');
+            input.focus();
+            return;
+        }
+
+        // Clean channel name (alphanumeric, hyphens, underscores only)
+        const cleanName = channelName.replace(/[^a-zA-Z0-9-_]/g, '').substring(0, 30);
+        if (!cleanName) {
+            this.showToast('Invalid channel name. Use letters, numbers, hyphens, or underscores', 'error');
+            input.focus();
+            return;
+        }
+
+        try {
+            // Create channel in Firebase
+            const channelRef = database.ref(`channels/${cleanName}`);
+            await channelRef.child('createdAt').set(firebase.database.ServerValue.TIMESTAMP);
+
+            // Clear input
+            input.value = '';
+
+            this.showToast(`Channel "${cleanName}" created`, 'success');
+            this.joinChannel(cleanName);
+        } catch (error) {
+            console.error('Error creating channel:', error);
+            this.showToast('Failed to create channel: ' + error.message, 'error');
+        }
+    }
+
     async showCreateChannelDialog() {
-        const channelName = prompt('Enter channel name:');
-        if (channelName && channelName.trim()) {
-            const cleanName = channelName.trim().replace(/[^a-zA-Z0-9-_]/g, '');
-            if (cleanName) {
-                // Create channel in Firebase
-                const channelRef = database.ref(`channels/${cleanName}`);
-                await channelRef.child('createdAt').set(firebase.database.ServerValue.TIMESTAMP);
-                this.showToast(`Channel "${cleanName}" created`, 'success');
-                this.joinChannel(cleanName);
+        // Focus on input instead of prompt
+        const input = document.getElementById('new-channel-input');
+        if (input) {
+            input.focus();
+        } else {
+            // Fallback to prompt if input doesn't exist
+            const channelName = prompt('Enter channel name:');
+            if (channelName && channelName.trim()) {
+                const cleanName = channelName.trim().replace(/[^a-zA-Z0-9-_]/g, '');
+                if (cleanName) {
+                    const channelRef = database.ref(`channels/${cleanName}`);
+                    await channelRef.child('createdAt').set(firebase.database.ServerValue.TIMESTAMP);
+                    this.showToast(`Channel "${cleanName}" created`, 'success');
+                    this.joinChannel(cleanName);
+                }
             }
         }
     }
